@@ -2,6 +2,8 @@ from rest_framework import serializers
 from .models import Negotiation, NegotiationMessage
 from fpo.serializers import FPOBidDetailSerializer
 from retailer.serializers import RetailerBidDetailSerializer
+from fpo.models import FPOBid
+from retailer.models import RetailerBid
 
 class GenericRelatedField(serializers.Field):
     """A custom field to handle generic relationships."""

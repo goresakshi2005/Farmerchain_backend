@@ -20,21 +20,28 @@ class NegotiationViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         
-        # Q objects to find negotiations where the user is either the bidder or the quote owner
+        # Get ContentType for our Bid models
         fpo_bid_type = ContentType.objects.get_for_model(FPOBid)
         retailer_bid_type = ContentType.objects.get_for_model(RetailerBid)
 
-        # User is the bidder (FPO or Retailer)
-        is_fpo_bidder = Q(content_type=fpo_bid_type, bid_fpo__id=user.id)
-        is_retailer_bidder = Q(content_type=retailer_bid_type, bid_retailer__id=user.id)
-        
-        # User is the quote owner (Farmer or FPO)
-        is_farmer_quote_owner = Q(content_type=fpo_bid_type, bid_fpo__quote__farmer__id=user.id)
-        is_fpo_quote_owner = Q(content_type=retailer_bid_type, bid_retailer__quote__fpo__id=user.id)
+        # 1. Find all FPO Bids where the current user is either the FPO (bidder) or the Farmer (quote owner)
+        involved_fpo_bid_ids = FPOBid.objects.filter(
+            Q(fpo_id=user.id) | Q(quote__farmer_id=user.id)
+        ).values_list('id', flat=True)
 
-        return Negotiation.objects.filter(
-            (is_fpo_bidder | is_retailer_bidder | is_farmer_quote_owner | is_fpo_quote_owner)
-        ).distinct()
+        # 2. Find all Retailer Bids where the current user is either the Retailer (bidder) or the FPO (quote owner)
+        involved_retailer_bid_ids = RetailerBid.objects.filter(
+            Q(retailer_id=user.id) | Q(quote__fpo_id=user.id)
+        ).values_list('id', flat=True)
+        
+        # 3. Build a query for Negotiations that point to any of these bids
+        fpo_negotiations_query = Q(content_type=fpo_bid_type, object_id__in=list(involved_fpo_bid_ids))
+        retailer_negotiations_query = Q(content_type=retailer_bid_type, object_id__in=list(involved_retailer_bid_ids))
+        
+        # 4. Combine the queries and return the final queryset
+        return Negotiation.objects.filter(fpo_negotiations_query | retailer_negotiations_query).distinct()
+
+    # ... (the rest of the view remains the same) ...
 
     @action(detail=True, methods=['post'], url_path='send-message')
     def send_message(self, request, pk=None):
@@ -51,7 +58,6 @@ class NegotiationViewSet(viewsets.ModelViewSet):
                 sender_id=request.user.id,
                 sender_name=request.user.name
             )
-            # Add email notification logic here
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -60,7 +66,6 @@ class NegotiationViewSet(viewsets.ModelViewSet):
         negotiation = self.get_object()
         bid = negotiation.bid
         
-        # Check if the user is the owner of the original quote
         is_owner = False
         if isinstance(bid, FPOBid) and request.user.id == bid.quote.farmer.id:
             is_owner = True
@@ -80,7 +85,6 @@ class NegotiationViewSet(viewsets.ModelViewSet):
         bid.quote.accepted_bid = bid
         bid.quote.save()
         
-        # Reject other bids for the same quote
         bid_model = bid.__class__
         bid_model.objects.filter(quote=bid.quote).exclude(id=bid.id).update(status='rejected')
 
